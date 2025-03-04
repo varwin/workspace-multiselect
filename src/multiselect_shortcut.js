@@ -250,7 +250,7 @@ const registerCut = function(useCopyPasteCrossTab) {
       const elementList = [];
       const apply = function(element) {
         if (cutShortcut.check(element)) {
-          copyData.add(JSON.stringify(element.toCopyData()));
+          copyData.add(JSON.stringify({...element.toCopyData(), workspaceId: workspace.id}));
           elementList.push(element.id);
         }
       };
@@ -371,6 +371,9 @@ const registerPaste = function(useCopyPasteCrossTab) {
       }
       copyData.forEach(function(stringData) {
         const data = JSON.parse(stringData);
+        if (data.workspaceId !== workspace.id) {
+          return;
+        }
         // Set unique id for data to prevent bug where
         // blocks on multiple workspaces are highlighted.
         if (workspace.id !== Blockly.getMainWorkspace().id) {
@@ -439,6 +442,117 @@ const registerPaste = function(useCopyPasteCrossTab) {
 };
 
 /**
+ * Keyboard shortcut to duplicate multiple selected blocks on
+ * ctrl+d.
+ */
+const registerDuplicate = function() {
+  const name = shortcutNames.MULTIDUPLICATE;
+  const duplicateShortcut = {
+    name,
+    preconditionFn: function(workspace) {
+      if (workspace.options.readOnly || Blockly.Gesture.inProgress()) {
+        return false;
+      }
+      const selected = Blockly.common.getSelected();
+      const dragSelection = dragSelectionWeakMap.get(workspace);
+      if (!dragSelection.size) {
+        return duplicateShortcut.check(selected);
+      }
+      for (const id of dragSelection) {
+        const element = getByID(workspace, id);
+        if (duplicateShortcut.check(element)) {
+          return true;
+        }
+      }
+      return false;
+    },
+    check: function(element) {
+      if (element instanceof Blockly.BlockSvg) {
+        return element && element.isDeletable() && element.isMovable() &&
+          !hasSelectedParent(element);
+      } else if (element instanceof
+        Blockly.comments.RenderedWorkspaceComment) {
+        return element && element.isDeletable() && element.isMovable();
+      }
+      return false;
+    },
+    callback: function(workspace, e) {
+      e.preventDefault();
+      workspace.hideChaff();
+
+      const duplicatedBlocks = {};
+      const connectionDBList = [];
+      const multiDraggable = multiDraggableWeakMap.get(workspace);
+
+      const apply = function(block) {
+        if (duplicateShortcut.check(block)) {
+          // Generate a new unique ID
+          const newId = Blockly.utils.idGenerator.genUid();
+          // Get the copy data of the block
+          const blockCopyData = block.toCopyData();
+          // Set the new ID in the copy data
+          blockCopyData.blockState.id = newId;
+          // Paste the block with the modified copy data
+          duplicatedBlocks[block.id] =
+            Blockly.clipboard.paste(blockCopyData, workspace);
+        }
+      };
+
+      const selected = Blockly.common.getSelected();
+      const dragSelection = dragSelectionWeakMap.get(workspace);
+      Blockly.Events.setGroup(true);
+
+      // Handle the case where MultiselectDraggable is in use
+      if (selected && selected instanceof MultiselectDraggable) {
+        for (const element of selected.subDraggables) {
+          apply(element[0]);
+        }
+      } else if (!dragSelection.size) {
+        apply(selected);
+      }
+
+      dragSelection.clear();
+      multiDraggable.clearAll_();
+      Blockly.common.setSelected(null);
+
+      for (const [id, block] of Object.entries(duplicatedBlocks)) {
+        const origBlock = workspace.getBlockById(id);
+        const origParentBlock = origBlock.getParent();
+        if (block.id) {
+          if (origParentBlock && origParentBlock.id in duplicatedBlocks &&
+            origParentBlock.getNextBlock() === origBlock) {
+            connectionDBList.push([
+              duplicatedBlocks[origParentBlock.id].nextConnection,
+              block.previousConnection]);
+          }
+          if (block.type !== 'drag_to_dupe') {
+            dragSelection.add(block.id);
+            multiDraggable.addSubDraggable_(block);
+          }
+        }
+      }
+      connectionDBList.forEach(function(connectionDB) {
+        connectionDB[0].connect(connectionDB[1]);
+      });
+      Blockly.common.setSelected(multiDraggable);
+      Blockly.Events.setGroup(false);
+
+      return true;
+    }
+  };
+
+  if (name in Blockly.ShortcutRegistry.registry.getRegistry()) {
+    Blockly.ShortcutRegistry.registry.unregister(name);
+  }
+  Blockly.ShortcutRegistry.registry.register(duplicateShortcut);
+
+  const ctrlD = Blockly.ShortcutRegistry.registry.createSerializedKey(
+    Blockly.utils.KeyCodes.D, [Blockly.utils.KeyCodes.CTRL]);
+  Blockly.ShortcutRegistry.registry.addKeyMapping(
+    ctrlD, duplicateShortcut.name, true);
+};
+
+/**
  * Keyboard shortcut to select all top blocks in the workspace on
  * ctrl+a, cmd+a, or alt+a.
  */
@@ -447,7 +561,7 @@ const registerSelectAll = function() {
   const selectAllShortcut = {
     name,
     preconditionFn: function(workspace) {
-      return workspace.getTopBlocks().some(
+      return workspace.getTopBlocks(false, true).some(
           (b) => selectAllShortcut.check(b)) ? true : false;
     },
     check: function(block) {
@@ -477,7 +591,7 @@ const registerSelectAll = function() {
       }
 
       const blockList = [];
-      workspace.getTopBlocks().forEach(function(block) {
+      workspace.getTopBlocks(false, true).forEach(function(block) {
         if (selectAllShortcut.check(block)) {
           blockList.push(block);
           let nextBlock = block.getNextBlock();
@@ -525,11 +639,14 @@ const registerSelectAll = function() {
  */
 export const unregisterOrigShortcut = function() {
   registeredShortcut.length = 0;
-  for (const name of [Blockly.ShortcutItems.names.DELETE,
+  for (const name of [
+    Blockly.ShortcutItems.names.DELETE,
     Blockly.ShortcutItems.names.COPY,
-    Blockly.ShortcutItems.names.CUT, Blockly.ShortcutItems.names.PASTE]) {
+    Blockly.ShortcutItems.names.CUT,
+    Blockly.ShortcutItems.names.PASTE,
+    Blockly.ShortcutItems.names.DUPLICATE]) {
     if (Object.entries(Blockly.ShortcutRegistry.registry.getRegistry())
-        .map(([_, value]) => value.name).includes(name)) {
+      .map(([_, value]) => value.name).includes(name)) {
       Blockly.ShortcutRegistry.registry.unregister(name);
       registeredShortcut.push(name);
     }
@@ -538,17 +655,23 @@ export const unregisterOrigShortcut = function() {
 
 export const unregisterOurShortcut = function() {
   registeredShortcut.length = 0;
-  for (const name of [shortcutNames.MULTIDELETE,
+  for (const name of [
+    shortcutNames.MULTIDELETE,
     shortcutNames.MULTICOPY,
-    shortcutNames.MULTICUT, shortcutNames.MULTIPASTE]) {
+    shortcutNames.MULTICUT,
+    shortcutNames.MULTIPASTE,
+    shortcutNames.MULTIDUPLICATE]) {
     if (Object.entries(Blockly.ShortcutRegistry.registry.getRegistry())
-        .map(([_, value]) => value.name).includes(name)) {
+      .map(([_, value]) => value.name).includes(name)) {
       Blockly.ShortcutRegistry.registry.unregister(name);
     }
   }
-  for (const name of [Blockly.ShortcutItems.names.DELETE,
+  for (const name of [
+    Blockly.ShortcutItems.names.DELETE,
     Blockly.ShortcutItems.names.COPY,
-    Blockly.ShortcutItems.names.CUT, Blockly.ShortcutItems.names.PASTE]) {
+    Blockly.ShortcutItems.names.CUT,
+    Blockly.ShortcutItems.names.PASTE,
+    Blockly.ShortcutItems.names.DUPLICATE]) {
     registeredShortcut.push(name);
   }
 };
@@ -562,6 +685,7 @@ export const registerOrigShortcut = function() {
     [Blockly.ShortcutItems.names.COPY]: Blockly.ShortcutItems.registerCopy,
     [Blockly.ShortcutItems.names.CUT]: Blockly.ShortcutItems.registerCut,
     [Blockly.ShortcutItems.names.PASTE]: Blockly.ShortcutItems.registerPaste,
+    [Blockly.ShortcutItems.names.DUPLICATE]: Blockly.ShortcutItems.registerDuplicate
   };
   for (const name of registeredShortcut) {
     map[name]();
@@ -579,6 +703,7 @@ export const registerOurShortcut = function(useCopyPasteCrossTab) {
     [Blockly.ShortcutItems.names.COPY]: registerCopy,
     [Blockly.ShortcutItems.names.CUT]: registerCut,
     [Blockly.ShortcutItems.names.PASTE]: registerPaste,
+    [Blockly.ShortcutItems.names.DUPLICATE]: registerDuplicate
   };
   for (const name of registeredShortcut) {
     if (ListNoParameter.includes(name)) {

@@ -70,6 +70,7 @@ export const shortcutNames = Object.freeze({
   MULTICOPY: 'multiselectCopy',
   MULTICUT: 'multiselectCut',
   MULTIPASTE: 'multiselectPaste',
+  MULTIDUPLICATE: 'multiselectDuplicate'
 });
 
 /**

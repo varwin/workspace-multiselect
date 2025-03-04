@@ -44,19 +44,20 @@ navigationController.init();
 document.addEventListener('DOMContentLoaded', function() {
   const defaultOptions = {
     toolbox: toolboxCategories,
-    useDoubleClick: true,
+    useDoubleClick: false,
     bumpNeighbours: false,
     multiFieldUpdate: true,
+    workspaceAutoFocus: false,
     multiselectIcon: {
-      hideIcon: false,
+      hideIcon: true,
       weight: 3,
       enabledIcon: 'media/select.svg',
       disabledIcon: 'media/unselect.svg',
     },
     multiSelectKeys: ['Shift'],
     multiselectCopyPaste: {
-      crossTab: true,
-      menu: true,
+      crossTab: false,
+      menu: false
     },
     grid: {
       spacing: 25,

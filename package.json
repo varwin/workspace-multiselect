@@ -1,5 +1,5 @@
 {
-  "name": "@mit-app-inventor/blockly-plugin-workspace-multiselect",
+  "name": "@varwin/blockly-plugin-workspace-multiselect",
   "version": "1.0.1",
   "description": "A Blockly plugin that allows to drag, select and doing actions on multiple blocks in the workspace.",
   "scripts": {
@@ -27,7 +27,7 @@
   },
   "repository": {
     "type": "git",
-    "url": "https://github.com/mit-cml/workspace-multiselect.git"
+    "url": "https://github.com/varwin/workspace-multiselect.git"
   },
   "license": "Apache-2.0",
   "directories": {
@@ -46,12 +46,15 @@
     "@blockly/dev-tools": "^8.0.12",
     "@blockly/keyboard-navigation": "^0.6.12",
     "@blockly/workspace-backpack": "^6.0.12",
-    "blockly": "^11.2.0"
+    "blockly": "npm:varwin-blockly@^11.1.0"
   },
   "peerDependencies": {
     "blockly": ">=11"
   },
-  "publishConfig": {},
+  "publishConfig": {
+    "access": "public",
+    "registry": "https://registry.npmjs.org/"
+  },
   "eslintConfig": {
     "extends": "@blockly/eslint-config"
   },

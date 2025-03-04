@@ -797,10 +797,10 @@ const registerSelectAll = function() {
   const id = 'workspaceSelectAll';
   const selectAllOption = {
     displayText: function() {
-      return 'Select all Blocks';
+      return Blockly.Msg['SELECT_ALL'];
     },
     preconditionFn: function(scope) {
-      return scope.workspace.getTopBlocks().some(
+      return scope.workspace.getTopBlocks(false, true).some(
           (b) => selectAllOption.check(b)) ? 'enabled' : 'disabled';
     },
     check: function(block) {
@@ -827,7 +827,7 @@ const registerSelectAll = function() {
       }
 
       const blockList = [];
-      scope.workspace.getTopBlocks().forEach(function(block) {
+      scope.workspace.getTopBlocks(false, true).forEach(function(block) {
         if (selectAllOption.check(block)) {
           blockList.push(block);
           let nextBlock = block.getNextBlock();
