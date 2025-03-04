@@ -149,7 +149,7 @@ const registerCopy = function(useCopyPasteCrossTab) {
       const blockList = [];
       const apply = function(element) {
         if (copyShortcut.check(element)) {
-          copyData.add(JSON.stringify(element.toCopyData()));
+          copyData.add(JSON.stringify({ ...element.toCopyData(), workspaceId: workspace.id }));
           if (element instanceof Blockly.BlockSvg) {
             blockList.push(element.id);
           }
