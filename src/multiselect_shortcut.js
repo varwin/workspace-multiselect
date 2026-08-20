@@ -13,6 +13,7 @@ import {
   dragSelectionWeakMap, hasSelectedParent, copyData, connectionDBList,
   dataCopyToStorage, dataCopyFromStorage, registeredShortcut,
   multiDraggableWeakMap, inPasteShortcut, getByID, shortcutNames,
+  getCopyPasteHook,
 } from './global';
 import {MultiselectDraggable} from './multiselect_draggable';
 
@@ -182,6 +183,17 @@ const registerCopy = function(useCopyPasteCrossTab) {
       if (useCopyPasteCrossTab) {
         dataCopyToStorage();
       }
+
+      const afterCopy = getCopyPasteHook(workspace, 'afterCopy');
+      if (afterCopy) {
+        afterCopy(workspace, {
+          blocks: Array.from(copyData).map(function(stringData) {
+            return JSON.parse(stringData);
+          }),
+          connections: connectionDBList.slice(),
+        });
+      }
+
       Blockly.Events.setGroup(false);
       return true;
     },
@@ -306,6 +318,17 @@ const registerCut = function(useCopyPasteCrossTab) {
       if (useCopyPasteCrossTab) {
         dataCopyToStorage();
       }
+
+      const afterCopy = getCopyPasteHook(workspace, 'afterCopy');
+      if (afterCopy) {
+        afterCopy(workspace, {
+          blocks: Array.from(copyData).map(function(stringData) {
+            return JSON.parse(stringData);
+          }),
+          connections: connectionDBList.slice(),
+        });
+      }
+
       Blockly.Events.setGroup(false);
       return true;
     },
@@ -363,14 +386,45 @@ const registerPaste = function(useCopyPasteCrossTab) {
         multiDraggable.clearAll_();
       }
 
-      Blockly.Events.setGroup(true);
+      // A paste can be a step inside something larger: an already open group is
+      // the one everything pasted here belongs to.
+      const outerGroup = Blockly.Events.getGroup();
+      if (!outerGroup) {
+        Blockly.Events.setGroup(true);
+      }
 
       const blockList = [];
       if (useCopyPasteCrossTab) {
         dataCopyFromStorage();
       }
-      copyData.forEach(function(stringData) {
-        const data = JSON.parse(stringData);
+
+      const beforePaste = getCopyPasteHook(workspace, 'beforePaste');
+      if (beforePaste) {
+        beforePaste(workspace);
+      }
+
+      let pasteBlocks = Array.from(copyData).map(function(stringData) {
+        return JSON.parse(stringData);
+      });
+      let pasteConnections = connectionDBList.slice();
+
+      // What was copied is about the workspace it was copied on, down to the
+      // id it is stamped with. A hook is what lets another one take it as its
+      // own - the stash itself stays as it was copied, since it belongs to
+      // every workspace reading it.
+      const adaptPaste = getCopyPasteHook(workspace, 'adaptPaste');
+      if (adaptPaste) {
+        const adapted = adaptPaste(workspace, {
+          blocks: pasteBlocks,
+          connections: pasteConnections,
+        });
+        if (adapted) {
+          pasteBlocks = adapted.blocks || [];
+          pasteConnections = adapted.connections || [];
+        }
+      }
+
+      pasteBlocks.forEach(function(data) {
         if (data.workspaceId !== workspace.id) {
           return;
         }
@@ -409,13 +463,21 @@ const registerPaste = function(useCopyPasteCrossTab) {
           multiDraggableWeakMap.get(workspace).addSubDraggable_(element);
         }
       });
-      connectionDBList.forEach(function(connectionDB) {
+      pasteConnections.forEach(function(connectionDB) {
         blockList[connectionDB[0]].nextConnection.connect(
             blockList[connectionDB[1]].previousConnection);
       });
 
+      // The elements are the ones this paste added, top level only.
+      const afterPaste = getCopyPasteHook(workspace, 'afterPaste');
+      if (afterPaste) {
+        afterPaste(workspace, blockList);
+      }
+
       Blockly.common.setSelected(multiDraggable);
-      Blockly.Events.setGroup(false);
+      if (!outerGroup) {
+        Blockly.Events.setGroup(false);
+      }
       return true;
     },
   };
