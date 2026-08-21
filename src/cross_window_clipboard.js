@@ -297,7 +297,9 @@ const collectProcedures = function(workspace, states) {
     collectProcedureNames(state, names);
   });
 
-  const procedures = {};
+  // A name is the user's to choose, so a plain object would answer for
+  // `toString` and friends with what it inherits and drop the function.
+  const procedures = Object.create(null);
   const pending = Array.from(names);
 
   while (pending.length) {
