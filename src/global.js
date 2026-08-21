@@ -41,6 +41,24 @@ export const copyData = new Set();
 export const inPasteShortcut = new WeakMap();
 
 /**
+ * Store the copy/paste hooks of a workspace.
+ */
+export const copyPasteHooksWeakMap = new WeakMap();
+
+/**
+ * Look up one copy/paste hook of a workspace. The shortcuts are registered
+ * once for the page while the hooks belong to a single workspace, so they are
+ * read through the workspace the shortcut was fired on.
+ * @param {!Blockly.Workspace} workspace The workspace to read the hooks of.
+ * @param {string} name The name of the hook.
+ * @returns {?Function} The hook, if this workspace has one.
+ */
+export const getCopyPasteHook = function(workspace, name) {
+  const hooks = copyPasteHooksWeakMap.get(workspace);
+  return hooks && typeof hooks[name] === 'function' ? hooks[name] : null;
+};
+
+/**
  * Store the copied connections list.
  */
 export const connectionDBList = [];

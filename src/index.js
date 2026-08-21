@@ -10,3 +10,4 @@
 
 export {Multiselect} from './multiselect';
 export {dragSelectionWeakMap, inMultipleSelectionModeWeakMap} from './global';
+export {crossWindowClipboardHooks} from './cross_window_clipboard';

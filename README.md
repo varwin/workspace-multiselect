@@ -63,6 +63,18 @@ options = {
     crossTab: true,
     // Show the copy/paste menu entries (true by default).
     menu: true,
+    // Take a buffer copied on another workspace - another window of the same
+    // origin, say - as this one's (false by default).  See the API section
+    // below.  Can also be given as {generator: <a Blockly generator>}.
+    crossWindow: false,
+    // Hooks for a host that adapts what it copies and pastes itself.  Given
+    // both, these win over crossWindow.  See the API section below.
+    hooks: {
+      afterCopy: (workspace, buffer) => {},
+      beforePaste: (workspace) => {},
+      adaptPaste: (workspace, buffer) => buffer,
+      afterPaste: (workspace, elements) => {},
+    },
   },
 };
 
@@ -157,6 +169,52 @@ customization. If we install the disable top blocks plugin after the multiselect
 - `inMultipleSelectionModeWeakMap`: The WeakMap storing whether the plugin is in multiple selection mode by workspace svg.
 - `Multiselect.withoutMultiFieldUpdates`: A wrapper function to ignore multi-field updates.
 - `Multiselect.setMultiselectIcon`: Pass in the icon URLs/data to change the multiselect icon at runtime.
+
+### Copying across windows
+
+Every window of the same origin shares the `localStorage` the `crossTab` buffer
+is written to, yet a paste keeps only what was copied on the workspace pasting
+it. `multiselectCopyPaste.crossWindow` takes what another workspace copied as
+this one's instead: the buffer is restamped, blocks this workspace cannot build
+are left behind and the connections among the rest are reindexed, and the whole
+paste is a single undo step.
+
+On the [varwin-blockly](https://www.npmjs.com/package/varwin-blockly) fork it
+does more, since a workspace there keeps block definitions by signature: the
+definitions behind the copied blocks travel with the buffer, so a block of a
+type this workspace never had arrives the same way as a block of a type it lost
+- rebuilt from its definition and marked as removed. The module a block lived in
+is dropped, the called functions are copied with their bodies, nested calls
+included, and a field naming an instance the workspace does not have falls back
+to its first one. A workspace without those methods simply gets the blocks it
+can build.
+
+It is implemented on the hooks below, so a host that needs something else can
+write its own instead.
+
+### Copy/paste hooks
+
+The copy buffer is about the workspace it was copied on: every entry is stamped
+with its id, and a paste keeps only what matches the workspace pasting it. That
+is what a page holding several workspaces needs, and what a workspace pasting
+what another one copied - another window sharing the same `localStorage`, say -
+has to be able to take as its own. `multiselectCopyPaste.hooks` are the places
+to do it, all optional and all per workspace:
+
+- `afterCopy(workspace, buffer)`: after a copy or a cut has filled the buffer,
+  and after it was written to the storage. For anything the buffer alone does
+  not carry.
+- `beforePaste(workspace)`: at the start of a paste, in the group of events the
+  paste is recorded as. For whatever the pasted blocks need to be there first.
+- `adaptPaste(workspace, buffer)`: the buffer as it was read, before anything is
+  pasted from it; return what should be pasted instead. The stored buffer itself
+  is left alone - it belongs to every workspace reading it. `connections` holds
+  pairs of indices into `blocks`, so dropping an entry means reindexing them.
+- `afterPaste(workspace, elements)`: the elements the paste added, top level
+  only, still in its group of events.
+
+A paste also joins a group of events that is already open, rather than opening
+one of its own, so a host can record it together with what it does around it.
 
 ## Credit
 - [DragSelect](https://github.com/ThibaultJanBeyer/DragSelect): This plugin uses DragSelect to realize the "drag a rectangle to select multiple blocks" feature. The patching PR [#143](https://github.com/ThibaultJanBeyer/DragSelect/pull/143) and [#165](https://github.com/ThibaultJanBeyer/DragSelect/pull/165) made all this possible, and these PRs are included in [v2.6.0](https://github.com/ThibaultJanBeyer/DragSelect/releases/tag/v2.6.0).

@@ -16,7 +16,9 @@ import {
   dragSelectionWeakMap, inMultipleSelectionModeWeakMap,
   hasSelectedParent,
   multiselectControlsList, multiDraggableWeakMap,
+  copyPasteHooksWeakMap,
 } from './global';
+import {crossWindowClipboardHooks} from './cross_window_clipboard';
 import {MultiselectControls} from './multiselect_controls';
 import {MultiselectDraggable} from './multiselect_draggable';
 
@@ -87,6 +89,14 @@ export class Multiselect {
     if (options.multiselectCopyPaste &&
         options.multiselectCopyPaste.menu === false) {
       this.useCopyPasteMenu_ = false;
+    }
+
+    const copyPaste = options.multiselectCopyPaste || {};
+    const hooks = copyPaste.hooks || (copyPaste.crossWindow ?
+        crossWindowClipboardHooks(this.workspace_, copyPaste.crossWindow) :
+        null);
+    if (hooks) {
+      copyPasteHooksWeakMap.set(this.workspace_, hooks);
     }
 
     if (!Blockly.ContextMenuRegistry.registry.getItem('workspaceSelectAll')) {
@@ -169,6 +179,7 @@ export class Multiselect {
    * @param {boolean} keepRegistry Keep the context menu and shortcut registry.
    */
   dispose(keepRegistry = false) {
+    copyPasteHooksWeakMap.delete(this.workspace_);
     if (this.onKeyDownWrapper_) {
       Blockly.browserEvents.unbind(this.onKeyDownWrapper_);
       this.onKeyDownWrapper_ = null;
