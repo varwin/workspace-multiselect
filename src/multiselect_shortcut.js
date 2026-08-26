@@ -13,8 +13,12 @@ import {
   dragSelectionWeakMap, hasSelectedParent, copyData, connectionDBList,
   dataCopyToStorage, dataCopyFromStorage, registeredShortcut,
   multiDraggableWeakMap, inPasteShortcut, getByID, shortcutNames,
-  getCopyPasteHook,
+  getCopyPasteHook, setCopyExtras, getCopyExtras,
 } from './global';
+import {
+  buildClipboardText, parseClipboardText, readClipboardText,
+  takeClipboardBuffer, useSystemClipboard, writeClipboardText,
+} from './system_clipboard';
 import {MultiselectDraggable} from './multiselect_draggable';
 
 /**
@@ -180,18 +184,20 @@ const registerCopy = function(useCopyPasteCrossTab) {
             blockList.indexOf(block.id)]);
         }
       });
-      if (useCopyPasteCrossTab) {
-        dataCopyToStorage();
-      }
-
+      // Before the transport rather than after it: what the hooks add to the
+      // buffer travels with it.
       const afterCopy = getCopyPasteHook(workspace, 'afterCopy');
-      if (afterCopy) {
-        afterCopy(workspace, {
-          blocks: Array.from(copyData).map(function(stringData) {
-            return JSON.parse(stringData);
-          }),
-          connections: connectionDBList.slice(),
-        });
+      setCopyExtras(afterCopy ? afterCopy(workspace, {
+        blocks: Array.from(copyData).map(function(stringData) {
+          return JSON.parse(stringData);
+        }),
+        connections: connectionDBList.slice(),
+      }) : null);
+
+      if (useSystemClipboard()) {
+        writeClipboardText(buildClipboardText(getCopyExtras()));
+      } else if (useCopyPasteCrossTab) {
+        dataCopyToStorage();
       }
 
       Blockly.Events.setGroup(false);
@@ -315,18 +321,20 @@ const registerCut = function(useCopyPasteCrossTab) {
         applyDelete(element);
       });
 
-      if (useCopyPasteCrossTab) {
-        dataCopyToStorage();
-      }
-
+      // Before the transport rather than after it: what the hooks add to the
+      // buffer travels with it.
       const afterCopy = getCopyPasteHook(workspace, 'afterCopy');
-      if (afterCopy) {
-        afterCopy(workspace, {
-          blocks: Array.from(copyData).map(function(stringData) {
-            return JSON.parse(stringData);
-          }),
-          connections: connectionDBList.slice(),
-        });
+      setCopyExtras(afterCopy ? afterCopy(workspace, {
+        blocks: Array.from(copyData).map(function(stringData) {
+          return JSON.parse(stringData);
+        }),
+        connections: connectionDBList.slice(),
+      }) : null);
+
+      if (useSystemClipboard()) {
+        writeClipboardText(buildClipboardText(getCopyExtras()));
+      } else if (useCopyPasteCrossTab) {
+        dataCopyToStorage();
       }
 
       Blockly.Events.setGroup(false);
@@ -355,6 +363,207 @@ const registerCut = function(useCopyPasteCrossTab) {
       metaX, cutShortcut.name, true);
 };
 
+/**
+ * How long the paste event of a shortcut is waited for before the clipboard is
+ * read for the text it would have carried.
+ */
+const PASTE_EVENT_TIMEOUT = 200;
+
+/**
+ * The paste a shortcut asked for, until the event the browser fires for it
+ * arrives.
+ */
+let expectedPaste = null;
+
+/**
+ * The paste event is the page's, as the shortcuts reading it are, and is
+ * listened for once.
+ */
+let listeningForPaste = false;
+
+/**
+ * @param {!Blockly.Workspace} workspace The workspace to paste on.
+ * @returns {boolean} Whether the paste was carried out.
+ */
+export const pasteBuffer = function(workspace) {
+  const dragSelection = dragSelectionWeakMap.get(workspace);
+  const multiDraggable = multiDraggableWeakMap.get(workspace);
+
+  // A paste of the page reaches here whichever workspace it found, and one
+  // the plugin was disposed of holds nothing to paste onto.
+  if (!dragSelection || !multiDraggable) return false;
+
+  inPasteShortcut.set(workspace, true);
+
+  // Update the dragSelection and multiDraggable object
+  // to remove current selection prior to pasting.
+  if (dragSelection.size) {
+    dragSelection.forEach(function(id) {
+      const element = getByID(workspace, id);
+      if (element) {
+        element.unselect();
+      }
+    });
+    dragSelection.clear();
+    multiDraggable.clearAll_();
+  }
+
+  // A paste can be a step inside something larger: an already open group is
+  // the one everything pasted here belongs to.
+  const outerGroup = Blockly.Events.getGroup();
+  if (!outerGroup) {
+    Blockly.Events.setGroup(true);
+  }
+
+  const blockList = [];
+
+  const beforePaste = getCopyPasteHook(workspace, 'beforePaste');
+  if (beforePaste) {
+    beforePaste(workspace, getCopyExtras());
+  }
+
+  let pasteBlocks = Array.from(copyData).map(function(stringData) {
+    return JSON.parse(stringData);
+  });
+  let pasteConnections = connectionDBList.slice();
+
+  // What was copied is about the workspace it was copied on, down to the
+  // id it is stamped with. A hook is what lets another one take it as its
+  // own - the stash itself stays as it was copied, since it belongs to
+  // every workspace reading it.
+  const adaptPaste = getCopyPasteHook(workspace, 'adaptPaste');
+  if (adaptPaste) {
+    const adapted = adaptPaste(workspace, {
+      blocks: pasteBlocks,
+      connections: pasteConnections,
+    });
+    if (adapted) {
+      pasteBlocks = adapted.blocks || [];
+      pasteConnections = adapted.connections || [];
+    }
+  }
+
+  pasteBlocks.forEach(function(data) {
+    if (data.workspaceId !== workspace.id) {
+      return;
+    }
+    // Set unique id for data to prevent bug where
+    // blocks on multiple workspaces are highlighted.
+    if (workspace.id !== Blockly.getMainWorkspace().id) {
+      if (data.blockState) {
+        data.blockState.id = Blockly.utils.idGenerator.genUid();
+      } else if (data.commentState) {
+        data.commentState.id = Blockly.utils.idGenerator.genUid();
+      }
+    }
+
+    if (data.source) {
+      workspace = data.source;
+    }
+    if (workspace.isFlyout) {
+      workspace = workspace.targetWorkspace;
+    }
+    if (data.typeCounts &&
+        workspace.isCapacityAvailable(data.typeCounts)) {
+      const element = Blockly.clipboard.paste(data, workspace);
+      if (element) {
+        blockList.push(element);
+      }
+      if (element.type !== 'drag_to_dupe') {
+        dragSelectionWeakMap.get(workspace).add(element.id);
+        multiDraggableWeakMap.get(workspace).addSubDraggable_(element);
+      }
+    } else if (data.commentState) {
+      const element = Blockly.clipboard.paste(data, workspace);
+      if (element) {
+        element.select();
+      }
+      dragSelectionWeakMap.get(workspace).add(element.id);
+      multiDraggableWeakMap.get(workspace).addSubDraggable_(element);
+    }
+  });
+  pasteConnections.forEach(function(connectionDB) {
+    blockList[connectionDB[0]].nextConnection.connect(
+        blockList[connectionDB[1]].previousConnection);
+  });
+
+  // The elements are the ones this paste added, top level only.
+  const afterPaste = getCopyPasteHook(workspace, 'afterPaste');
+  if (afterPaste) {
+    afterPaste(workspace, blockList);
+  }
+
+  Blockly.common.setSelected(multiDraggable);
+  if (!outerGroup) {
+    Blockly.Events.setGroup(false);
+  }
+  return true;
+};
+
+/**
+ * The browser answers a paste shortcut with an event carrying the text, which
+ * is the one place the clipboard is handed over rather than asked for. Where
+ * the page is not told about the paste at all - an editor inside a frame of
+ * another origin, a paste carried out by the application around it - nothing
+ * arrives, and the clipboard is read for it instead.
+ * @param {!Blockly.Workspace} workspace The workspace to paste on.
+ */
+const expectPasteEvent = function(workspace) {
+  const expected = {workspace: workspace};
+  expectedPaste = expected;
+
+  setTimeout(function() {
+    if (expectedPaste !== expected) return;
+    expectedPaste = null;
+
+    readClipboardText().then(function(text) {
+      const buffer = parseClipboardText(text);
+      if (!buffer) return;
+
+      takeClipboardBuffer(buffer);
+      pasteBuffer(workspace);
+    });
+  }, PASTE_EVENT_TIMEOUT);
+};
+
+/**
+ * A paste of the page, however it was asked for: by the shortcut, by the menu
+ * of the browser, by the application around it.
+ * @param {!ClipboardEvent} e The event as it arrived.
+ */
+const onPaste = function(e) {
+  if (!useSystemClipboard()) return;
+
+  const expected = expectedPaste;
+  expectedPaste = null;
+
+  // A field being edited is pasting text into itself.
+  if (Blockly.browserEvents.isTargetInput(e) || !e.clipboardData) return;
+
+  const buffer = parseClipboardText(e.clipboardData.getData('text/plain'));
+  if (!buffer) return;
+
+  // A paste that came some other way than the shortcut goes to the workspace
+  // Blockly itself would hand one.
+  const workspace = (expected && expected.workspace) ||
+      Blockly.common.getMainWorkspace();
+  if (!workspace || workspace.options.readOnly ||
+      Blockly.Gesture.inProgress()) {
+    return;
+  }
+
+  e.preventDefault();
+  takeClipboardBuffer(buffer);
+  pasteBuffer(workspace);
+};
+
+const listenForPasteEvents = function() {
+  if (listeningForPaste) return;
+
+  listeningForPaste = true;
+  document.addEventListener('paste', onPaste);
+};
+
 // TODO: Look into undo stack and adding/removing blocks from multidraggable
 /**
  * Keyboard shortcut to paste multiple selected blocks on
@@ -369,116 +578,16 @@ const registerPaste = function(useCopyPasteCrossTab) {
       return !workspace.options.readOnly && !Blockly.Gesture.inProgress();
     },
     callback: function(workspace) {
-      inPasteShortcut.set(workspace, true);
-      const dragSelection = dragSelectionWeakMap.get(workspace);
-      const multiDraggable = multiDraggableWeakMap.get(workspace);
-
-      // Update the dragSelection and multiDraggable object
-      // to remove current selection prior to pasting.
-      if (dragSelection.size) {
-        dragSelection.forEach(function(id) {
-          const element = getByID(workspace, id);
-          if (element) {
-            element.unselect();
-          }
-        });
-        dragSelection.clear();
-        multiDraggable.clearAll_();
+      if (useSystemClipboard()) {
+        expectPasteEvent(workspace);
+        return true;
       }
 
-      // A paste can be a step inside something larger: an already open group is
-      // the one everything pasted here belongs to.
-      const outerGroup = Blockly.Events.getGroup();
-      if (!outerGroup) {
-        Blockly.Events.setGroup(true);
-      }
-
-      const blockList = [];
       if (useCopyPasteCrossTab) {
         dataCopyFromStorage();
       }
 
-      const beforePaste = getCopyPasteHook(workspace, 'beforePaste');
-      if (beforePaste) {
-        beforePaste(workspace);
-      }
-
-      let pasteBlocks = Array.from(copyData).map(function(stringData) {
-        return JSON.parse(stringData);
-      });
-      let pasteConnections = connectionDBList.slice();
-
-      // What was copied is about the workspace it was copied on, down to the
-      // id it is stamped with. A hook is what lets another one take it as its
-      // own - the stash itself stays as it was copied, since it belongs to
-      // every workspace reading it.
-      const adaptPaste = getCopyPasteHook(workspace, 'adaptPaste');
-      if (adaptPaste) {
-        const adapted = adaptPaste(workspace, {
-          blocks: pasteBlocks,
-          connections: pasteConnections,
-        });
-        if (adapted) {
-          pasteBlocks = adapted.blocks || [];
-          pasteConnections = adapted.connections || [];
-        }
-      }
-
-      pasteBlocks.forEach(function(data) {
-        if (data.workspaceId !== workspace.id) {
-          return;
-        }
-        // Set unique id for data to prevent bug where
-        // blocks on multiple workspaces are highlighted.
-        if (workspace.id !== Blockly.getMainWorkspace().id) {
-          if (data.blockState) {
-            data.blockState.id = Blockly.utils.idGenerator.genUid();
-          } else if (data.commentState) {
-            data.commentState.id = Blockly.utils.idGenerator.genUid();
-          }
-        }
-
-        if (data.source) {
-          workspace = data.source;
-        }
-        if (workspace.isFlyout) {
-          workspace = workspace.targetWorkspace;
-        }
-        if (data.typeCounts &&
-            workspace.isCapacityAvailable(data.typeCounts)) {
-          const element = Blockly.clipboard.paste(data, workspace);
-          if (element) {
-            blockList.push(element);
-          }
-          if (element.type !== 'drag_to_dupe') {
-            dragSelectionWeakMap.get(workspace).add(element.id);
-            multiDraggableWeakMap.get(workspace).addSubDraggable_(element);
-          }
-        } else if (data.commentState) {
-          const element = Blockly.clipboard.paste(data, workspace);
-          if (element) {
-            element.select();
-          }
-          dragSelectionWeakMap.get(workspace).add(element.id);
-          multiDraggableWeakMap.get(workspace).addSubDraggable_(element);
-        }
-      });
-      pasteConnections.forEach(function(connectionDB) {
-        blockList[connectionDB[0]].nextConnection.connect(
-            blockList[connectionDB[1]].previousConnection);
-      });
-
-      // The elements are the ones this paste added, top level only.
-      const afterPaste = getCopyPasteHook(workspace, 'afterPaste');
-      if (afterPaste) {
-        afterPaste(workspace, blockList);
-      }
-
-      Blockly.common.setSelected(multiDraggable);
-      if (!outerGroup) {
-        Blockly.Events.setGroup(false);
-      }
-      return true;
+      return pasteBuffer(workspace);
     },
   };
 
@@ -501,6 +610,8 @@ const registerPaste = function(useCopyPasteCrossTab) {
       Blockly.utils.KeyCodes.V, [Blockly.utils.KeyCodes.META]);
   Blockly.ShortcutRegistry.registry.addKeyMapping(
       metaV, pasteShortcut.name, true);
+
+  listenForPasteEvents();
 };
 
 /**

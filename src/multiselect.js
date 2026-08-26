@@ -19,6 +19,7 @@ import {
   copyPasteHooksWeakMap,
 } from './global';
 import {crossWindowClipboardHooks} from './cross_window_clipboard';
+import {setSystemClipboard} from './system_clipboard';
 import {MultiselectControls} from './multiselect_controls';
 import {MultiselectDraggable} from './multiselect_draggable';
 
@@ -84,6 +85,13 @@ export class Multiselect {
     if (options.multiselectCopyPaste &&
         options.multiselectCopyPaste.crossTab === false) {
       this.useCopyPasteCrossTab_ = false;
+    }
+
+    // The clipboard of the system is the page's, as are the shortcuts reading
+    // it, so it is not held on this instance.  It wins over crossTab.
+    if (options.multiselectCopyPaste &&
+        options.multiselectCopyPaste.systemClipboard === true) {
+      setSystemClipboard(true);
     }
 
     if (options.multiselectCopyPaste &&
