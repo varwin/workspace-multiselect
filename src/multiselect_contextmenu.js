@@ -13,8 +13,14 @@ import {
   dragSelectionWeakMap, hasSelectedParent, copyData,
   connectionDBList, dataCopyToStorage, dataCopyFromStorage,
   blockNumGetFromStorage, registeredContextMenu, multiDraggableWeakMap, getByID,
+  setCopyExtras,
 } from './global';
 import {MultiselectDraggable} from './multiselect_draggable';
+import {pasteBuffer} from './multiselect_shortcut';
+import {
+  buildClipboardText, parseClipboardText, readClipboardText,
+  takeClipboardBuffer, useSystemClipboard, writeClipboardText,
+} from './system_clipboard';
 
 /**
  * Copy multiple selected blocks to clipboard.
@@ -116,7 +122,12 @@ const registerCopy = function(useCopyPasteCrossTab) {
             blockList.indexOf(block.id)]);
         }
       });
-      if (useCopyPasteCrossTab) {
+      if (useSystemClipboard()) {
+        // The menu copies without the hooks of a workspace, so the buffer is
+        // all there is to carry.
+        setCopyExtras(null);
+        writeClipboardText(buildClipboardText(null));
+      } else if (useCopyPasteCrossTab) {
         dataCopyToStorage();
       }
       Blockly.Events.setGroup(false);
@@ -691,8 +702,8 @@ const registerPaste = function(useCopyPasteCrossTab) {
   const id = 'blockPasteFromStorage';
   const pasteOption = {
     displayText: function() {
-      const workableDraggableLength =
-          blockNumGetFromStorage(useCopyPasteCrossTab);
+      const workableDraggableLength = blockNumGetFromStorage(
+          useCopyPasteCrossTab && !useSystemClipboard());
       if (workableDraggableLength <= 1) {
         return Blockly.Msg['CROSS_TAB_PASTE']?
           Blockly.Msg['CROSS_TAB_PASTE'] : 'Paste';
@@ -707,12 +718,28 @@ const registerPaste = function(useCopyPasteCrossTab) {
       }
     },
     preconditionFn: function(scope) {
+      const stashed = blockNumGetFromStorage(
+          useCopyPasteCrossTab && !useSystemClipboard());
       return scope.workspace.options.readOnly?
-        'hidden': (blockNumGetFromStorage(useCopyPasteCrossTab) < 1?
-          'disabled': 'enabled');
+        'hidden': (stashed < 1? 'disabled': 'enabled');
     },
     callback: function(scope) {
       let workspace = scope.workspace;
+
+      // Away from the paste event the clipboard is asked for rather than
+      // given, so the paste waits for the answer - and then goes through the
+      // routine the shortcut uses, hooks and all.
+      if (useSystemClipboard()) {
+        readClipboardText().then(function(text) {
+          const buffer = parseClipboardText(text);
+          if (!buffer) return;
+
+          takeClipboardBuffer(buffer);
+          pasteBuffer(workspace);
+        });
+        return true;
+      }
+
       const dragSelection = dragSelectionWeakMap.get(workspace);
       Blockly.Events.setGroup(true);
       const multiDraggable = multiDraggableWeakMap.get(workspace);
@@ -1221,7 +1248,12 @@ const registerCommentCopy = function(useCopyPasteCrossTab) {
         apply(scope.comment);
       }
 
-      if (useCopyPasteCrossTab) {
+      if (useSystemClipboard()) {
+        // The menu copies without the hooks of a workspace, so the buffer is
+        // all there is to carry.
+        setCopyExtras(null);
+        writeClipboardText(buildClipboardText(null));
+      } else if (useCopyPasteCrossTab) {
         dataCopyToStorage();
       }
       Blockly.Events.setGroup(false);

@@ -132,6 +132,27 @@ export const getByID = function(workspace, id) {
 };
 
 /**
+ * Whatever the hooks of the host sent along with the buffer travels wherever
+ * the buffer does - beside it in the storage, inside the text the clipboard
+ * carries - and belongs to the buffer this page holds.
+ */
+let copyExtras = null;
+
+/**
+ * @param {?Object} extras What the hooks sent with the buffer just copied.
+ */
+export const setCopyExtras = function(extras) {
+  copyExtras = extras || null;
+};
+
+/**
+ * @returns {?Object} What came with the buffer this page holds.
+ */
+export const getCopyExtras = function() {
+  return copyExtras;
+};
+
+/**
  * Store copy information for blocks in localStorage.
  */
 export const dataCopyToStorage = function() {
@@ -144,6 +165,7 @@ export const dataCopyToStorage = function() {
   localStorage.setItem('blocklyStashMulti', JSON.stringify(storage));
   localStorage.setItem('blocklyStashConnection',
       JSON.stringify(connectionDBList));
+  localStorage.setItem('blocklyStashExtras', JSON.stringify(copyExtras));
   localStorage.setItem('blocklyStashTime', timestamp);
 };
 
@@ -164,6 +186,11 @@ export const dataCopyFromStorage = function() {
     connection.forEach((data) => {
       connectionDBList.push(data);
     });
+    try {
+      copyExtras = JSON.parse(localStorage.getItem('blocklyStashExtras'));
+    } catch (e) {
+      copyExtras = null;
+    }
   }
 };
 

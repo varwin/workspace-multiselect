@@ -61,6 +61,10 @@ options = {
   multiselectCopyPaste: {
     // Enable the copy/paste accross tabs feature (true by default).
     crossTab: true,
+    // Carry the buffer in the clipboard of the system rather than in the
+    // storage of the page (false by default).  Wins over crossTab.  See the
+    // API section below.
+    systemClipboard: false,
     // Show the copy/paste menu entries (true by default).
     menu: true,
     // Take a buffer copied on another workspace - another window of the same
@@ -70,8 +74,8 @@ options = {
     // Hooks for a host that adapts what it copies and pastes itself.  Given
     // both, these win over crossWindow.  See the API section below.
     hooks: {
-      afterCopy: (workspace, buffer) => {},
-      beforePaste: (workspace) => {},
+      afterCopy: (workspace, buffer) => extras,
+      beforePaste: (workspace, extras) => {},
       adaptPaste: (workspace, buffer) => buffer,
       afterPaste: (workspace, elements) => {},
     },
@@ -192,6 +196,32 @@ can build.
 It is implemented on the hooks below, so a host that needs something else can
 write its own instead.
 
+### Copying through the clipboard of the system
+
+The storage a `crossTab` buffer is written to belongs to one origin, so what it
+carries reaches the other windows of the same page and nothing else - not
+another installation of the same editor, and no page that would like to offer
+blocks for one to paste. `multiselectCopyPaste.systemClipboard` carries the
+buffer in the clipboard of the system instead, as text:
+
+```json
+{
+  "blocklyClipboard": 1,
+  "blocks": [{"paster": "block", "blockState": {"type": "controls_if"}}],
+  "connections": [[0, 1]],
+  "extras": {}
+}
+```
+
+`blocks` are the entries of the buffer, `connections` pairs of indices into it,
+and `extras` whatever `afterCopy` sent along. Text that is not such an envelope
+is left alone, so a paste of anything else is still the page's own.
+
+A copy writes the clipboard as it fills the buffer. A paste reads the text off
+the paste event of the browser, which is the one place the clipboard is given
+rather than asked for; where that event does not reach the page, the clipboard
+is read for it instead, and the browser is what decides whether it may be.
+
 ### Copy/paste hooks
 
 The copy buffer is about the workspace it was copied on: every entry is stamped
@@ -202,10 +232,11 @@ has to be able to take as its own. `multiselectCopyPaste.hooks` are the places
 to do it, all optional and all per workspace:
 
 - `afterCopy(workspace, buffer)`: after a copy or a cut has filled the buffer,
-  and after it was written to the storage. For anything the buffer alone does
-  not carry.
-- `beforePaste(workspace)`: at the start of a paste, in the group of events the
-  paste is recorded as. For whatever the pasted blocks need to be there first.
+  before it is carried anywhere. For anything the buffer alone does not carry:
+  whatever is returned travels with it, and a paste of it is handed it back.
+- `beforePaste(workspace, extras)`: at the start of a paste, in the group of
+  events the paste is recorded as, with whatever the copy sent along. For
+  whatever the pasted blocks need to be there first.
 - `adaptPaste(workspace, buffer)`: the buffer as it was read, before anything is
   pasted from it; return what should be pasted instead. The stored buffer itself
   is left alone - it belongs to every workspace reading it. `connections` holds

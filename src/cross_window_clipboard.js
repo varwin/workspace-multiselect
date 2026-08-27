@@ -7,10 +7,11 @@
 /**
  * @fileoverview Taking a buffer copied on another workspace as this one's.
  *
- * The buffer already travels between windows: with crossTab on it is written to
- * localStorage, and windows of the same origin share it. What it carries,
- * though, is about the workspace it was copied on - it is stamped with that
- * workspace, and a paste keeps only what matches the one pasting it.
+ * The buffer already travels: to another window through the storage of the
+ * page, to anywhere at all through the clipboard of the system. What it
+ * carries, though, is about the workspace it was copied on - it is stamped
+ * with that workspace, and a paste keeps only what matches the one pasting
+ * it.
  *
  * On top of that, a workspace of the varwin-blockly fork holds blocks that know
  * the module they live in and the signature of the definition they were built
@@ -20,17 +21,15 @@
  * with the buffer, and a block of an object this scene never had arrives the
  * same as a block of an object it lost.
  *
+ * All of it travels with the buffer rather than beside it: a copy hands what
+ * it collected to the plugin, and a paste is given back what came with the
+ * buffer it is pasting.
+ *
  * All of it is optional: a workspace without those methods simply gets the
  * blocks it can build.
  */
 
 import * as Blockly from 'blockly/core';
-
-/**
- * The keys this module keeps alongside the buffer of the plugin itself.
- */
-const STASH_DEFINITIONS = 'varwinBlocklyStashDefinitions';
-const STASH_PROCEDURES = 'varwinBlocklyStashProcedures';
 
 /**
  * The field naming the object instance a block acts on.
@@ -61,6 +60,16 @@ const DEFINITION_TYPES = [
 ];
 
 /**
+ * @param {?Object} value What a buffer says it brought.
+ * @returns {!Object} The map of states it holds, or an empty one.
+ */
+const objectOf = function(value) {
+  return value && typeof value === 'object' && !Array.isArray(value) ?
+      value :
+      {};
+};
+
+/**
  * Kept for as long as the undo history can reach back to a paste, which
  * outlasts the buffer they came from.
  */
@@ -72,19 +81,6 @@ const broughtDefinitions = new Map();
  * asks for the type back.
  */
 const protectedSignatures = new Set();
-
-/**
- * Read one of our own keys.
- * @param {string} key The key to read.
- * @returns {!Object} What was stored, or an empty object.
- */
-const readJson = function(key) {
-  try {
-    return JSON.parse(localStorage.getItem(key)) || {};
-  } catch (e) {
-    return {};
-  }
-};
 
 /**
  * Visit the places a block state holds another one.
@@ -330,10 +326,11 @@ const collectProcedures = function(workspace, states) {
 };
 
 /**
- * Copying is the plugin's; this only adds what the other window needs to
+ * Copying is the plugin's; this only adds what another workspace needs to
  * rebuild what it has never seen.
  * @param {!Blockly.Workspace} workspace The workspace copied from.
  * @param {!Object} buffer The buffer as it was copied.
+ * @returns {!Object} What travels with it.
  */
 const stashCopy = function(workspace, buffer) {
   const states = blockStatesOf(buffer);
@@ -357,8 +354,7 @@ const stashCopy = function(workspace, buffer) {
     if (registered[signature]) definitions[signature] = registered[signature];
   });
 
-  localStorage.setItem(STASH_DEFINITIONS, JSON.stringify(definitions));
-  localStorage.setItem(STASH_PROCEDURES, JSON.stringify(procedures));
+  return {definitions: definitions, procedures: procedures};
 };
 
 /**
@@ -367,10 +363,10 @@ const stashCopy = function(workspace, buffer) {
  * call.
  * @param {!Blockly.Workspace} workspace The workspace pasting.
  * @param {?Object} generator The generator of the host, if it has one.
+ * @param {!Object} procedures The functions that came with the buffer.
  * @returns {!Object} The blocks this added, and the functions they define.
  */
-const adoptProcedures = function(workspace, generator) {
-  const procedures = readJson(STASH_PROCEDURES);
+const adoptProcedures = function(workspace, generator, procedures) {
   const blocks = [];
   const names = new Set();
 
@@ -495,11 +491,25 @@ const installDefinitions = function(workspace, definitions) {
           {};
 
   const added = Object.keys(definitions).filter(function(signature) {
-    return !known[signature];
+    return !known[signature] && definitions[signature] &&
+        typeof definitions[signature] === 'object';
   });
   if (!added.length) return function() {};
 
-  workspace.registerBlockDefinitions(definitions);
+  // Only what is missing: a signature this workspace already has is the
+  // definition its own blocks were built from, and no buffer may redefine it.
+  const missing = {};
+  added.forEach(function(signature) {
+    missing[signature] = definitions[signature];
+  });
+
+  try {
+    workspace.registerBlockDefinitions(missing);
+  } catch (e) {
+    // What cannot be registered is one more type this workspace does not have;
+    // the blocks built from it are left behind like any other.
+    return function() {};
+  }
 
   return function() {
     if (typeof workspace.unregisterBlockDefinition !== 'function') return;
@@ -539,11 +549,10 @@ const guardDefinitions = function(workspace) {
 /**
  * Register the definitions that came with the buffer.
  * @param {!Blockly.Workspace} workspace The workspace pasting.
+ * @param {!Object} definitions The definitions that came with the buffer.
  * @returns {!Function} Releases the definitions nothing was built from.
  */
-const adoptDefinitions = function(workspace) {
-  const definitions = readJson(STASH_DEFINITIONS);
-
+const adoptDefinitions = function(workspace, definitions) {
   Object.keys(definitions).forEach(function(signature) {
     broughtDefinitions.set(signature, definitions[signature]);
   });
@@ -604,6 +613,8 @@ export const crossWindowClipboardHooks = function(workspace, options) {
   let releaseDefinitions = null;
   let adoptedProcedures = [];
 
+  let stash = {};
+
   // The definitions of another scene are held only for as long as the paste
   // needs them; a paste that never reached its end releases them on the next.
   const release = function() {
@@ -616,13 +627,18 @@ export const crossWindowClipboardHooks = function(workspace, options) {
 
   return {
     afterCopy: function(pasteWorkspace, buffer) {
-      stashCopy(pasteWorkspace, buffer);
+      return stashCopy(pasteWorkspace, buffer);
     },
 
-    beforePaste: function(pasteWorkspace) {
+    beforePaste: function(pasteWorkspace, extras) {
       release();
 
-      releaseDefinitions = adoptDefinitions(pasteWorkspace);
+      // Read off the clipboard of the system, a buffer was written by anybody
+      // at all: what it says it brought is taken for its shape alone.
+      stash = extras && typeof extras === 'object' ? extras : {};
+
+      releaseDefinitions =
+          adoptDefinitions(pasteWorkspace, objectOf(stash.definitions));
     },
 
     adaptPaste: function(pasteWorkspace, buffer) {
@@ -633,7 +649,8 @@ export const crossWindowClipboardHooks = function(workspace, options) {
       const generator = generatorOf();
 
       // The functions the calls need, ahead of the blocks calling them.
-      const procedures = adoptProcedures(pasteWorkspace, generator);
+      const procedures = adoptProcedures(
+          pasteWorkspace, generator, objectOf(stash.procedures));
       adoptedProcedures = procedures.blocks;
 
       return adoptBuffer(pasteWorkspace, buffer, generator, procedures.names);
