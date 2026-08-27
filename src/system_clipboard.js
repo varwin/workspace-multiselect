@@ -164,10 +164,29 @@ const writeThroughSelection = function(text) {
 };
 
 /**
+ * Whether the asynchronous clipboard is offered here at all. Inside a frame it
+ * is the embedder's to allow, and asking anyway is a violation the console
+ * reports on every copy - the selection below is refused nothing.
+ * @param {string} feature The permission to look for.
+ * @returns {boolean} Whether this document is allowed it.
+ */
+const allowedHere = function(feature) {
+  const policy = document.permissionsPolicy || document.featurePolicy;
+  if (!policy || typeof policy.allowsFeature !== 'function') return true;
+
+  try {
+    return policy.allowsFeature(feature);
+  } catch (e) {
+    return true;
+  }
+};
+
+/**
  * @param {string} text The text to put on the clipboard of the system.
  */
 export const writeClipboardText = function(text) {
-  if (!navigator.clipboard || !navigator.clipboard.writeText) {
+  if (!navigator.clipboard || !navigator.clipboard.writeText ||
+      !allowedHere('clipboard-write')) {
     writeThroughSelection(text);
     return;
   }
@@ -187,7 +206,8 @@ export const writeClipboardText = function(text) {
  * @returns {!Promise<?string>} The text on the clipboard, if it can be read.
  */
 export const readClipboardText = function() {
-  if (!navigator.clipboard || !navigator.clipboard.readText) {
+  if (!navigator.clipboard || !navigator.clipboard.readText ||
+      !allowedHere('clipboard-read')) {
     return Promise.resolve(null);
   }
 
