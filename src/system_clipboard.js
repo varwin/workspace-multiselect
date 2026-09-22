@@ -14,12 +14,25 @@
  *
  * Text that is not an envelope of ours belongs to whoever else the paste was
  * meant for, so it is left alone.
+ *
+ * The envelope travels deflated: block JSON repeats itself - the same types,
+ * the same instance guids, the same signatures - and a screenful of blocks is
+ * tens of kilobytes of it. The marker rides inside, so reading the clipboard is
+ * trying to unpack it.
  */
+
+import {deflateSync, inflateSync, strFromU8, strToU8} from 'fflate';
 
 import {connectionDBList, copyData, setCopyExtras} from './global';
 
 const MARKER = 'blocklyClipboard';
-const FORMAT = 1;
+const FORMAT = 2;
+
+/**
+ * The format before the buffer was deflated. Read, never written: a buffer
+ * copied by an older editor is still a buffer.
+ */
+const PLAIN_FORMAT = 1;
 
 /**
  * Whether the buffer travels through the clipboard of the system. It belongs
@@ -54,10 +67,38 @@ const parseJson = function(text) {
 };
 
 /**
- * @param {?Object} extras Whatever the hooks of the host sent with the buffer.
- * @returns {string} The envelope to put on the clipboard.
+ * @param {!Uint8Array} bytes The bytes to encode.
+ * @returns {string} Their base64, in pieces small enough to apply at once.
  */
-export const buildClipboardText = function(extras) {
+const toBase64 = function(bytes) {
+  const CHUNK = 0x8000;
+  let binary = '';
+  for (let at = 0; at < bytes.length; at += CHUNK) {
+    binary += String.fromCharCode.apply(null, bytes.subarray(at, at + CHUNK));
+  }
+
+  return btoa(binary);
+};
+
+/**
+ * @param {string} text The base64 to decode.
+ * @returns {!Uint8Array} The bytes it holds.
+ */
+const fromBase64 = function(text) {
+  const binary = atob(text);
+  const bytes = new Uint8Array(binary.length);
+  for (let at = 0; at < binary.length; at++) {
+    bytes[at] = binary.charCodeAt(at);
+  }
+
+  return bytes;
+};
+
+/**
+ * @param {?Object} extras Whatever the hooks of the host sent with the buffer.
+ * @returns {!Object} The buffer itself, before it is packed into an envelope.
+ */
+const collectBuffer = function(extras) {
   const blocks = [];
   copyData.forEach(function(data) {
     const block = typeof data === 'string' ? parseJson(data) : data;
@@ -68,15 +109,48 @@ export const buildClipboardText = function(extras) {
     blocks.push(block);
   });
 
-  const envelope = {};
-  envelope[MARKER] = FORMAT;
-  envelope.blocks = blocks;
-  envelope.connections = connectionDBList.slice();
+  const buffer = {blocks: blocks, connections: connectionDBList.slice()};
   if (extras && Object.keys(extras).length) {
-    envelope.extras = extras;
+    buffer.extras = extras;
   }
 
-  return JSON.stringify(envelope);
+  return buffer;
+};
+
+/**
+ * @param {?Object} extras Whatever the hooks of the host sent with the buffer.
+ * @returns {string} The envelope to put on the clipboard.
+ */
+export const buildClipboardText = function(extras) {
+  const buffer = collectBuffer(extras);
+  const envelope = {};
+  envelope[MARKER] = FORMAT;
+  envelope.blocks = buffer.blocks;
+  envelope.connections = buffer.connections;
+  if (buffer.extras) envelope.extras = buffer.extras;
+
+  const text = JSON.stringify(envelope);
+
+  try {
+    return toBase64(deflateSync(strToU8(text), {level: 9}));
+  } catch (e) {
+    // A buffer nobody here can pack is still a buffer, and open it is read by
+    // an editor of either version.
+    envelope[MARKER] = PLAIN_FORMAT;
+    return JSON.stringify(envelope);
+  }
+};
+
+/**
+ * @param {string} text The text read from the clipboard.
+ * @returns {?Object} The envelope it holds, or null if it holds none.
+ */
+const unpackEnvelope = function(text) {
+  try {
+    return parseJson(strFromU8(inflateSync(fromBase64(text))));
+  } catch (e) {
+    return null;
+  }
 };
 
 /**
@@ -89,9 +163,10 @@ export const parseClipboardText = function(text) {
   if (typeof text !== 'string') return null;
 
   const trimmed = text.trim();
-  if (trimmed.charAt(0) !== '{') return null;
-
-  const envelope = parseJson(trimmed);
+  // An editor that wrote its envelope in the open is still one to paste from.
+  const envelope = trimmed.charAt(0) === '{' ?
+      parseJson(trimmed) :
+      unpackEnvelope(trimmed);
   if (!envelope || typeof envelope !== 'object') return null;
 
   // A format this one does not know is a buffer whose meaning is exactly what
